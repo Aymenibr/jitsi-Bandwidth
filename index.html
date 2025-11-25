@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jitsi Bandwidth Control Playground</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7fb;
+      --card: #ffffff;
+      --accent: #2563eb;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background: radial-gradient(circle at 10% 20%, #e2e8ff 0, #f7f7fb 30%, #f7f7fb 100%);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 32px 16px 64px;
+    }
+    .shell {
+      width: min(1100px, 100%);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
+      padding: 24px 24px 32px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+    p.subtitle {
+      margin: 0 0 20px;
+      color: var(--muted);
+    }
+    .form-card {
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: #fafbff;
+      box-shadow: 0 6px 24px rgba(15, 23, 42, 0.06);
+      margin-bottom: 10px;
+    }
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      align-items: end;
+    }
+    @media (min-width: 768px) {
+      .field-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+    label {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-weight: 600;
+      color: var(--text);
+      font-size: 14px;
+    }
+    input[type="text"],
+    select {
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: #fbfbfe;
+      font-size: 14px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    input[type="text"]:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+    }
+    button {
+      padding: 12px 14px;
+      border: none;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #fff;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+      min-height: 42px;
+      width: 100%;
+      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
+    }
+    button:hover { background: linear-gradient(135deg, #1d4ed8, #1e40af); }
+    button:active { transform: translateY(1px); }
+    .actions {
+      display: flex;
+      align-items: flex-end;
+    }
+    #message {
+      min-height: 22px;
+      margin-bottom: 10px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    #message.error { color: #dc2626; }
+    #status-message {
+      min-height: 18px;
+      margin: 4px 0 12px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    #status-message.error { color: #dc2626; }
+    #jitsi-container {
+      width: 100%;
+      height: 600px;
+      border: 1px dashed var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      background: #0f172a;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <h1>Jitsi Bandwidth Control Playground</h1>
+    <p class="subtitle">Quickly spin up a meeting with custom domain and room.</p>
+
+    <form id="meeting-form" class="form-card">
+      <div class="field-grid">
+        <label>
+          Jitsi domain
+          <input type="text" id="domain-input" name="domain" value="meet.example.com" placeholder="meet.example.com" required>
+        </label>
+        <label>
+          Room name
+          <input type="text" id="room-input" name="room" value="test-room" placeholder="test-room" required>
+        </label>
+        <label>
+          Quality profile
+          <select id="profile-select" name="profile">
+            <option value="normal">Normal (360p)</option>
+            <option value="low">Low (240p)</option>
+            <option value="ultraLowDynamic" selected>Ultra Low Dynamic (120p fallback)</option>
+          </select>
+        </label>
+        <div class="actions">
+          <button type="submit">Start Meeting</button>
+        </div>
+      </div>
+    </form>
+
+    <p id="status-message"></p>
+    <div id="message" role="status" aria-live="polite"></div>
+    <div id="jitsi-container"></div>
+  </main>
+
+  <script>
+    const form = document.getElementById("meeting-form");
+    const domainInput = document.getElementById("domain-input");
+    const roomInput = document.getElementById("room-input");
+    const profileSelect = document.getElementById("profile-select");
+    const messageEl = document.getElementById("message");
+    const statusEl = document.getElementById("status-message");
+    const jitsiContainer = document.getElementById("jitsi-container");
+
+    let apiInstance = null;
+    let scriptTag = null;
+    let loadedDomain = null;
+
+    const clearMessage = () => {
+      messageEl.textContent = "";
+      messageEl.classList.remove("error");
+      statusEl.textContent = "";
+      statusEl.classList.remove("error");
+    };
+
+    const setStatus = (text, isError = false) => {
+      statusEl.textContent = text;
+      statusEl.classList.toggle("error", isError);
+    };
+
+    const setMessage = (text, isError = false) => {
+      messageEl.textContent = text;
+      messageEl.classList.toggle("error", isError);
+      setStatus(text, isError);
+    };
+
+    // Loads the Jitsi external_api.js from the domain input.
+    const loadJitsiScript = (domain) => {
+      // Reuse the script if we already loaded it for the same domain.
+      if (window.JitsiMeetExternalAPI && loadedDomain === domain) {
+        setStatus("Jitsi API loaded successfully.");
+        return Promise.resolve();
+      }
+
+      if (scriptTag) {
+        scriptTag.remove();
+        scriptTag = null;
+      }
+
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = `https://${domain}/external_api.js`;
+        script.async = true;
+        script.onload = () => {
+          loadedDomain = domain;
+          setStatus("Jitsi API loaded successfully.");
+          resolve();
+        };
+        script.onerror = () => reject(new Error("Failed to load external_api.js"));
+        document.head.appendChild(script);
+        scriptTag = script;
+      });
+    };
+
+    // Profiles define how we trade video quality for bandwidth; Ultra Low Dynamic aims to keep video alive on extremely poor links by allowing 120p fallback and aggressive bitrate limits.
+    const getConfigForProfile = (profile) => {
+      switch (profile) {
+        case "low":
+          return {
+            disableSimulcast: false,
+            disableAdaptiveSimulcast: false,
+            enableLayerSuspension: true,
+            disableHighQuality: true,
+            resolution: 240,
+            minHDHeight: -1,
+            constraints: {
+              video: {
+                height: { ideal: 240, max: 240, min: 180 },
+                frameRate: { ideal: 20, max: 20 }
+              }
+            },
+            videoQuality: {
+              maxBitratesVideo: {
+                low: 150,
+                standard: 300,
+                high: 500
+              },
+              minHeightForQualityLvl: {
+                "360p": 300,
+                "240p": 180,
+                "180p": 120
+              }
+            }
+          };
+        case "ultraLowDynamic":
+          return {
+            disableSimulcast: false,
+            disableAdaptiveSimulcast: false,
+            enableLayerSuspension: false,
+            disableHighQuality: true,
+            resolution: 360,
+            minHDHeight: -1,
+            constraints: {
+              video: {
+                height: { ideal: 360, max: 360, min: 120 },
+                frameRate: { ideal: 15, max: 15 }
+              }
+            },
+            videoQuality: {
+              maxBitratesVideo: {
+                low: 80,
+                standard: 200,
+                high: 500
+              },
+              minHeightForQualityLvl: {
+                "360p": 300,
+                "240p": 180,
+                "180p": 120
+              }
+            }
+          };
+        case "normal":
+        default:
+          return {
+            disableSimulcast: false,
+            disableAdaptiveSimulcast: false,
+            enableLayerSuspension: true,
+            disableHighQuality: false,
+            resolution: 360,
+            minHDHeight: -1,
+            constraints: {
+              video: {
+                height: { ideal: 360, max: 360, min: 240 },
+                frameRate: { ideal: 30, max: 30 }
+              }
+            }
+          };
+      }
+    };
+
+    // Creates a new Jitsi instance in the container using the provided domain, room, and profile config.
+    const createJitsiInstance = (domain, room, configOverwrite) => {
+      // Jitsi instance creation.
+      apiInstance = new JitsiMeetExternalAPI(domain, {
+        roomName: room,
+        parentNode: jitsiContainer,
+        configOverwrite
+      });
+    };
+
+    const disposeExisting = () => {
+      if (apiInstance) {
+        apiInstance.dispose();
+        apiInstance = null;
+      }
+      jitsiContainer.innerHTML = "";
+    };
+
+    const persistSettings = (domain, room, profile) => {
+      try {
+        localStorage.setItem("jitsiDomain", domain);
+        localStorage.setItem("jitsiRoom", room);
+        localStorage.setItem("jitsiProfile", profile);
+      } catch (error) {
+        console.warn("Could not persist settings", error);
+      }
+    };
+
+    const loadPersistedSettings = () => {
+      try {
+        const savedDomain = localStorage.getItem("jitsiDomain");
+        const savedRoom = localStorage.getItem("jitsiRoom");
+        const savedProfile = localStorage.getItem("jitsiProfile");
+        if (savedDomain) domainInput.value = savedDomain;
+        if (savedRoom) roomInput.value = savedRoom;
+        if (savedProfile) profileSelect.value = savedProfile;
+      } catch (error) {
+        console.warn("Could not load persisted settings", error);
+      }
+    };
+
+    loadPersistedSettings();
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearMessage();
+
+      const domain = domainInput.value.trim();
+      const room = roomInput.value.trim();
+      const profile = profileSelect.value;
+
+      if (!domain) {
+        setMessage("Please provide a domain.", true);
+        return;
+      }
+      if (!room) {
+        setMessage("Please provide a room name.", true);
+        return;
+      }
+
+      persistSettings(domain, room, profile);
+
+      disposeExisting();
+
+      try {
+        // Script load happens here, based on the chosen domain.
+        await loadJitsiScript(domain);
+      } catch (error) {
+        setMessage("Failed to load Jitsi external API. Check your domain.", true);
+        console.error(error);
+        return;
+      }
+
+      try {
+        // Jitsi iframe instance gets created here with the chosen domain and room.
+        const configOverwrite = getConfigForProfile(profile);
+        setStatus(`Creating meeting with profile: ${profile}.`);
+        createJitsiInstance(domain, room, configOverwrite);
+        setMessage(`Meeting started on ${domain} in room "${room}" using profile "${profile}".`);
+      } catch (error) {
+        setMessage("Could not start the meeting. Check the console for details.", true);
+        console.error(error);
+      }
+    });
+
+    // Tip: change domain/room by editing the inputs above, then click "Start Meeting" again.
+  </script>
+</body>
+</html>
